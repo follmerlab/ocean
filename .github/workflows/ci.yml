@@ -12,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
-        python: ["3.11", "3.12", "3.13"]
+        python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,3 +29,30 @@ jobs:
         run: pytest -v
       - name: App starts
         run: python app.py --help
+
+  windows-launcher:
+    name: Windows start.bat (fresh install)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: start.bat builds the environment from scratch
+        shell: cmd
+        run: start.bat --setup-only
+      - name: The environment works
+        shell: cmd
+        run: |
+          .venv\Scripts\python -c "import flask, numpy, h5py, seabreeze; seabreeze.use('cseabreeze'); import seabreeze.spectrometers as sb; print('ok', sb.list_devices())"
+          .venv\Scripts\python -m pip install pytest --quiet
+          .venv\Scripts\python -m pytest -q
+      - name: A broken environment is repaired on the next run
+        shell: cmd
+        run: |
+          .venv\Scripts\python -m pip uninstall -y flask
+          call start.bat --setup-only
+          .venv\Scripts\python -c "import flask; print('repaired', flask.__version__)"
+      - name: install_drivers.bat is present
+        shell: cmd
+        run: if not exist install_drivers.bat exit /b 1

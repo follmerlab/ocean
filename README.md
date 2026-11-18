@@ -9,21 +9,32 @@ The original v1 interface is preserved at tag `v1.0.0` (`git checkout v1.0.0`).
 
 ## Install and start
 
-Needs Python 3.11 or newer.
+### Windows (from the GitHub ZIP)
 
-**Windows:** double-click `start.bat`. The first run creates a `.venv` folder and installs
-packages. USB drivers, once per computer, from an **administrator** prompt:
+1. **Python 3.14.** Install it from <https://www.python.org/downloads/windows/>, choosing a
+   **3.14.x** "Windows installer (64-bit)". *Not 3.15*: the spectrometer library has no Windows
+   package for it yet. If the Python install manager is already on the computer, `py install 3.14`
+   in a terminal does the same. (3.11–3.13 also work.)
+2. **Unzip.** On GitHub use *Code → Download ZIP*, then right-click the ZIP → **Extract All**
+   to a folder outside OneDrive, e.g. `C:\ocean`. Don't run anything from inside the ZIP window.
+3. **Driver, once per computer.** Plug in the spectrometer and double-click
+   **`install_drivers.bat`**. Type `y`, click **Yes** at the administrator prompt, then type
+   `y` again in the second window that opens. When it reports *Success*, unplug and replug the
+   spectrometer.
+4. **Start.** Double-click **`start.bat`**. The first run sets up Python packages in a `.venv`
+   folder (internet, ~2 min); later runs start in seconds. The browser opens the interface;
+   closing the black window stops it.
 
-```bat
-.venv\Scripts\seabreeze_os_setup
-```
+If Windows shows *"Windows protected your PC"*, click **More info → Run anyway**: the files
+come from a ZIP download, so they carry the internet mark. If the spectrometer isn't found, close
+OceanView (it can hold the device) and replug. To practice without the hardware, open a terminal
+in the folder and run `start.bat --mock`.
 
-If OceanView/OceanDirect is installed it may own the USB driver; if the Flame is not
-found, close OceanView, re-run `seabreeze_os_setup`, and replug.
+### macOS / Linux
 
-**macOS / Linux:** `./start.sh` (Linux: also run `.venv/bin/seabreeze_os_setup` once for udev rules).
+`./start.sh` (Linux: also run `.venv/bin/seabreeze_os_setup` once for udev rules).
 
-**By hand:**
+### By hand
 
 ```bash
 python -m venv .venv
@@ -162,7 +173,8 @@ subtraction removes both.
 ```
 
 GitHub Actions (`.github/workflows/ci.yml`) runs the tests and a SeaBreeze import check on
-Windows, macOS and Ubuntu with Python 3.11–3.13 on every push.
+Windows, macOS and Ubuntu with Python 3.11–3.14 on every push, and installs from scratch with
+`start.bat` on Windows to check the student path.
 
 ```
 app.py                     Flask server, routes, CLI
@@ -170,6 +182,8 @@ spectro.py                 device access, processing, kinetic runs, saving, mock
 templates/index.html       page
 static/app.js, style.css   UI (plain JS, no build step)
 static/plotly-basic.min.js Plotly 2.35.2, bundled so it works offline
+start.bat, start.sh        launchers (set up .venv on first run)
+install_drivers.bat        Windows USB driver, once per computer
 scripts/hardware_check.py  connection + timing check on real hardware
 tests/test_app.py          tests (no hardware needed)
 ```

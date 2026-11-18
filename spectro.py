@@ -81,8 +81,9 @@ def open_device(mock: bool = False):
     import seabreeze.spectrometers as sb
     devices = sb.list_devices()
     if not devices:
-        raise RuntimeError("No spectrometer found. Check the USB cable and drivers "
-                           "(Windows: run `seabreeze_os_setup` once as administrator).")
+        raise RuntimeError("No spectrometer found. Check the USB cable; on Windows, run "
+                           "install_drivers.bat once (and close OceanView, which can hold "
+                           "the device).")
     return sb.Spectrometer(devices[0])
 
 
