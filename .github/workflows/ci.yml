@@ -56,3 +56,26 @@ jobs:
       - name: install_drivers.bat is present
         shell: cmd
         run: if not exist install_drivers.bat exit /b 1
+
+  macos-launcher:
+    name: macOS start.sh (fresh install)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: start.sh builds the environment from scratch
+        run: bash start.sh --setup-only
+      - name: The environment works
+        run: |
+          .venv/bin/python -c "import flask, numpy, h5py, seabreeze; seabreeze.use('cseabreeze'); import seabreeze.spectrometers as sb; print('ok', sb.list_devices())"
+          .venv/bin/python -m pip install pytest --quiet
+          .venv/bin/python -m pytest -q
+      - name: A broken environment is repaired on the next run
+        run: |
+          .venv/bin/python -m pip uninstall -y flask
+          bash start.sh --setup-only
+          .venv/bin/python -c "import flask; print('repaired', flask.__version__)"
+      - name: start.command is executable
+        run: test -x start.command

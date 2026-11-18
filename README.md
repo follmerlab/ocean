@@ -30,9 +30,29 @@ come from a ZIP download, so they carry the internet mark. If the spectrometer i
 OceanView (it can hold the device) and replug. To practice without the hardware, open a terminal
 in the folder and run `start.bat --mock`.
 
-### macOS / Linux
+### macOS (from the GitHub ZIP)
 
-`./start.sh` (Linux: also run `.venv/bin/seabreeze_os_setup` once for udev rules).
+No driver is needed on a Mac.
+
+1. **Python 3.14.** Install it from <https://www.python.org/downloads/macos/>, choosing a
+   **3.14.x** "macOS 64-bit universal2 installer", or run `brew install python@3.14`. *Not 3.15*,
+   for the same reason as on Windows. The Mac's built-in `python3` (3.9) is too old. (3.11–3.13
+   also work.)
+2. **Unzip.** *Code → Download ZIP*; Safari unzips it to `Downloads/ocean-main` (otherwise
+   double-click the ZIP). Move the folder wherever you like, e.g. `Documents/ocean`.
+3. **First start, in Terminal** (shows the one-time setup, ~2 min, needs internet). Type `bash `
+   (with a space), drag `start.sh` from Finder into the Terminal window, and press Return.
+4. **After that, double-click `start.command`** in Finder. The first time, macOS may say it
+   *cannot verify* the file: open **System Settings → Privacy & Security**, scroll down, and click
+   **Open Anyway** (needed once, because it came from a download). Closing the Terminal window
+   stops the program.
+
+To practice without the hardware: `bash start.sh --mock`.
+
+### Linux
+
+`bash start.sh` (same steps as macOS); also run `.venv/bin/seabreeze_os_setup` once for the
+USB permissions (udev rules).
 
 ### By hand
 
@@ -174,7 +194,7 @@ subtraction removes both.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs the tests and a SeaBreeze import check on
 Windows, macOS and Ubuntu with Python 3.11–3.14 on every push, and installs from scratch with
-`start.bat` on Windows to check the student path.
+`start.bat` on Windows and `start.sh` on macOS to check the student path.
 
 ```
 app.py                     Flask server, routes, CLI
@@ -183,6 +203,7 @@ templates/index.html       page
 static/app.js, style.css   UI (plain JS, no build step)
 static/plotly-basic.min.js Plotly 2.35.2, bundled so it works offline
 start.bat, start.sh        launchers (set up .venv on first run)
+start.command              macOS double-click launcher
 install_drivers.bat        Windows USB driver, once per computer
 scripts/hardware_check.py  connection + timing check on real hardware
 tests/test_app.py          tests (no hardware needed)
