@@ -1,0 +1,4 @@
+* text=auto
+*.bat text eol=crlf
+*.sh text eol=lf
+static/plotly-basic.min.js -diff linguist-vendored

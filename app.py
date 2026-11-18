@@ -1,299 +1,277 @@
-from flask import Flask, render_template, jsonify, request
-from flask_cors import CORS
-import seabreeze.spectrometers as sb
-import numpy as np
+"""Ocean Optics Flame browser interface: spectra and kinetics.
+
+    python app.py                 # real spectrometer, http://127.0.0.1:5001
+    python app.py --mock          # simulated spectrometer (no hardware)
+    python app.py --data-dir D:/data --host 0.0.0.0   # serve to the lab network
+"""
+from __future__ import annotations
+
+import argparse
 import threading
 import time
-import os
+import webbrowser
+from datetime import datetime
+from pathlib import Path
 
-app = Flask(__name__)
-CORS(app)
+from flask import Flask, jsonify, render_template, request
 
-# Global variables
-spectrometer = None
-dark_spectrum = None
-reference_spectrum = None
-is_acquiring = False
-acquisition_thread = None
-current_spectrum_data = None
-integration_time = 1.0  # seconds
+import spectro
+from spectro import Background, Device, KineticRun, RunConfig, for_display, jsonable, process
 
-def initialize_spectrometer():
-    """Initialize the spectrometer connection"""
-    global spectrometer
-    try:
-        # Close existing connection if any
-        if spectrometer is not None:
+__version__ = "2.0.0"
+
+
+class Station:
+    """All instrument state for one spectrometer."""
+
+    def __init__(self, data_dir: Path, mock: bool = False):
+        self.data_dir = Path(data_dir).expanduser().resolve()
+        self.mock = mock
+        self.dev: Device | None = None
+        self.dark: Background | None = None
+        self.ref: Background | None = None
+        self.last = None            # last captured spectrum, for "Save"
+        self.live = False
+        self.live_frame = None
+        self.run: KineticRun | None = None
+        self.connect_error = None
+
+    def connect(self):
+        if self.busy:
+            raise RuntimeError("Stop the kinetic run first.")
+        self.stop_live()
+        if self.dev:
+            self.dev.close()
+        self.dev = None
+        try:
+            self.dev = Device(spectro.open_device(self.mock))
+            self.connect_error = None
+        except Exception as e:
+            self.connect_error = str(e)
+            raise
+
+    @property
+    def busy(self):
+        return self.run is not None and self.run.is_alive()
+
+    def require(self):
+        if self.dev is None:
+            raise RuntimeError(self.connect_error or "Spectrometer not connected.")
+        return self.dev
+
+    def valid(self, bg: Background | None):
+        return bg.counts if bg is not None and bg.matches(self.dev) else None
+
+    def frame(self, raw, t=None):
+        dev = self.dev
+        counts, absorbance = process(raw, self.valid(self.dark), self.valid(self.ref))
+        return {"wavelengths": jsonable(dev.wavelengths), "counts": for_display(counts),
+                "absorbance": for_display(absorbance), "saturated": dev.is_saturated(raw),
+                "max_counts": float(raw[spectro.SKIP_PIXELS:].max()),
+                "time": t or time.time()}
+
+    # live view
+    def start_live(self):
+        self.require()
+        if self.busy:
+            raise RuntimeError("A kinetic run is using the spectrometer.")
+        if not self.live:
+            self.live = True
+            threading.Thread(target=self._live_loop, daemon=True).start()
+
+    def stop_live(self):
+        self.live = False
+
+    def _live_loop(self):
+        while self.live and self.dev is not None:
             try:
-                spectrometer.close()
-            except:
-                pass
-        
-        devices = sb.list_devices()
-        if not devices:
-            return None, "No spectrometers found. Check USB connection and permissions."
-        
-        print(f"Found {len(devices)} device(s): {devices}")
-        spectrometer = sb.Spectrometer(devices[0])
-        spectrometer.integration_time_micros(int(integration_time * 1_000_000))
-        return spectrometer, None
-    except Exception as e:
-        print(f"Error initializing spectrometer: {e}")
-        return None, str(e)
+                raw, _ = self.dev.read()
+                self.live_frame = self.frame(raw)
+            except Exception as e:
+                self.live_frame = {"error": str(e)}
+                time.sleep(0.5)
+            # Short integrations would otherwise hog the lock and the CPU
+            time.sleep(max(0.0, 0.1 - self.dev.integration_s) if self.dev else 0.1)
 
-def continuous_acquisition():
-    """Continuously acquire spectra in a separate thread"""
-    global is_acquiring, current_spectrum_data, spectrometer
-    
-    while is_acquiring:
-        try:
-            if spectrometer is None:
-                time.sleep(0.1)
-                continue
-                
-            wavelengths = spectrometer.wavelengths()
-            intensities = spectrometer.intensities()
-            
-            # Apply dark subtraction if available
-            if dark_spectrum is not None:
-                intensities = intensities - dark_spectrum
-            
-            # Calculate absorbance if reference is available
-            absorbance = None
-            transmittance = None
-            if reference_spectrum is not None:
-                # Avoid division by zero
-                ref_corrected = reference_spectrum.copy()
-                if dark_spectrum is not None:
-                    ref_corrected = ref_corrected - dark_spectrum
-                ref_corrected[ref_corrected <= 0] = 1e-10
-                intensities_safe = intensities.copy()
-                intensities_safe[intensities_safe <= 0] = 1e-10
-                
-                transmittance = intensities_safe / ref_corrected
-                absorbance = -np.log10(transmittance)
-            
-            current_spectrum_data = {
-                'wavelengths': wavelengths.tolist(),
-                'intensities': intensities.tolist(),
-                'absorbance': absorbance.tolist() if absorbance is not None else None,
-                'transmittance': transmittance.tolist() if transmittance is not None else None,
-                'timestamp': time.time()
-            }
-            
-            time.sleep(0.1)  # Small delay to prevent overwhelming the system
-            
-        except Exception as e:
-            print(f"Error in continuous acquisition: {e}")
-            time.sleep(0.5)
 
-@app.route('/')
-def index():
-    """Serve the main page"""
-    return render_template('index.html')
+def create_app(station: Station) -> Flask:
+    app = Flask(__name__)
+    st = station
 
-@app.route('/api/initialize', methods=['POST'])
-def api_initialize():
-    """Initialize or reinitialize the spectrometer"""
-    global spectrometer
-    spec, error = initialize_spectrometer()
-    if error:
-        return jsonify({'success': False, 'error': error})
-    return jsonify({'success': True, 'message': 'Spectrometer initialized'})
+    def ok(**kw):
+        return jsonify(success=True, **kw)
 
-@app.route('/api/status', methods=['GET'])
-def api_status():
-    """Get the current status of the spectrometer"""
-    return jsonify({
-        'connected': spectrometer is not None,
-        'acquiring': is_acquiring,
-        'has_dark': dark_spectrum is not None,
-        'has_reference': reference_spectrum is not None,
-        'integration_time': integration_time
-    })
+    @app.errorhandler(Exception)
+    def on_error(e):
+        code = getattr(e, "code", 400)
+        return jsonify(success=False, error=str(e)), code if isinstance(code, int) else 400
 
-@app.route('/api/set_integration_time', methods=['POST'])
-def api_set_integration_time():
-    """Set the integration time (in seconds)"""
-    global integration_time, spectrometer
-    
-    data = request.json
-    time_sec = float(data.get('time', 1.0))
-    
-    # Clamp between 0.001 (1ms) and 10 seconds
-    time_sec = max(0.001, min(10.0, time_sec))
-    integration_time = time_sec
-    
-    if spectrometer is not None:
-        try:
-            spectrometer.integration_time_micros(int(time_sec * 1_000_000))
-            return jsonify({'success': True, 'integration_time': integration_time})
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)})
-    
-    return jsonify({'success': True, 'integration_time': integration_time})
+    @app.get("/")
+    def index():
+        return render_template("index.html", version=__version__)
 
-@app.route('/api/capture_dark', methods=['POST'])
-def api_capture_dark():
-    """Capture a dark spectrum"""
-    global dark_spectrum, spectrometer
-    
-    if spectrometer is None:
-        return jsonify({'success': False, 'error': 'Spectrometer not initialized'})
-    
+    @app.get("/api/status")
+    def status():
+        dev = st.dev
+        return ok(
+            version=__version__, connected=dev is not None, error=st.connect_error,
+            device=dev.info if dev else None, mock=st.mock,
+            integration_s=dev.integration_s if dev else None,
+            n_avg=dev.n_avg if dev else 1, live=st.live, busy=st.busy,
+            dark=st.dark.summary(dev) if st.dark and dev else None,
+            reference=st.ref.summary(dev) if st.ref and dev else None,
+            run_state=st.run.state if st.run else None,
+            data_dir=str(st.data_dir), hdf5_available=spectro.h5py is not None,
+            has_last=st.last is not None)
+
+    @app.post("/api/connect")
+    def connect():
+        st.connect()
+        return ok(device=st.dev.info)
+
+    @app.post("/api/settings")
+    def settings():
+        dev = st.require()
+        if st.busy:
+            raise RuntimeError("Settings are locked during a kinetic run.")
+        body = request.get_json(force=True)
+        if "integration_ms" in body:
+            dev.set_integration(float(body["integration_ms"]) / 1000)
+        if "n_avg" in body:
+            dev.n_avg = min(max(int(body["n_avg"]), 1), 1000)
+        return ok(integration_s=dev.integration_s, n_avg=dev.n_avg)
+
+    def capture_background(kind):
+        dev = st.require()
+        if st.busy:
+            raise RuntimeError("A kinetic run is using the spectrometer.")
+        raw, _ = dev.read()
+        bg = Background(raw, dev.integration_s, dev.n_avg)
+        setattr(st, kind, bg)
+        return ok(**{kind: bg.summary(dev)}, saturated=dev.is_saturated(raw),
+                  counts=jsonable(raw))
+
+    @app.post("/api/dark")
+    def dark():
+        return capture_background("dark")
+
+    @app.post("/api/reference")
+    def reference():
+        return capture_background("ref")
+
+    @app.post("/api/clear/<kind>")
+    def clear(kind):
+        if kind not in ("dark", "reference"):
+            raise ValueError("kind must be dark or reference")
+        setattr(st, "dark" if kind == "dark" else "ref", None)
+        return ok()
+
+    @app.post("/api/capture")
+    def capture():
+        dev = st.require()
+        if st.busy:
+            raise RuntimeError("A kinetic run is using the spectrometer.")
+        raw, _ = dev.read()
+        st.last = {"raw": raw, "dark": st.valid(st.dark), "ref": st.valid(st.ref),
+                   "integration_s": dev.integration_s, "n_avg": dev.n_avg,
+                   "taken": datetime.now().isoformat(timespec="seconds")}
+        return ok(data=st.frame(raw))
+
+    @app.post("/api/save")
+    def save():
+        if st.last is None:
+            raise RuntimeError("Capture a spectrum first.")
+        body = request.get_json(force=True)
+        name = body.get("name") or "spectrum"
+        L = st.last
+        meta = {"taken": L["taken"], "integration_s": L["integration_s"],
+                "n_avg": L["n_avg"], "device": st.dev.info,
+                "detector_corrections": ["electric_dark", "nonlinearity"]}
+        path = spectro.save_spectrum(st.data_dir / "spectra", name, body.get("notes", ""),
+                                     st.dev.wavelengths, L["raw"], L["dark"], L["ref"], meta)
+        return ok(file=str(path))
+
+    @app.post("/api/live/<action>")
+    def live(action):
+        st.start_live() if action == "start" else st.stop_live()
+        return ok(live=st.live)
+
+    @app.get("/api/live")
+    def live_frame():
+        return ok(data=st.live_frame)
+
+    @app.post("/api/run/start")
+    def run_start():
+        dev = st.require()
+        if st.busy:
+            raise RuntimeError("A run is already in progress.")
+        cfg = RunConfig.from_dict(request.get_json(force=True))
+        for bg, label in ((st.dark, "dark"), (st.ref, "reference")):
+            if bg is not None and not bg.matches(dev):
+                raise RuntimeError(f"The {label} was taken at {bg.integration_s*1000:g} ms "
+                                   f"but the integration time is now "
+                                   f"{dev.integration_s*1000:g} ms. Retake or clear it.")
+        if cfg.save_hdf5 and spectro.h5py is None:
+            raise RuntimeError("HDF5 needs h5py: pip install h5py")
+        st.stop_live()
+        time.sleep(dev.integration_s + 0.05)  # let the live loop release the device
+        st.run = KineticRun(dev, cfg, st.valid(st.dark), st.valid(st.ref), st.data_dir)
+        st.run.start()
+        return ok(folder=str(st.run.folder))
+
+    @app.post("/api/run/stop")
+    def run_stop():
+        if st.run:
+            st.run.stop()
+        return ok()
+
+    @app.post("/api/run/mark")
+    def run_mark():
+        if not st.busy:
+            raise RuntimeError("No run in progress.")
+        return ok(event=st.run.mark(request.get_json(force=True).get("label", "")))
+
+    @app.get("/api/run/status")
+    def run_status():
+        if st.run is None:
+            return ok(run=None)
+        return ok(run=st.run.status(int(request.args.get("since", 0))))
+
+    return app
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--mock", action="store_true", help="use a simulated spectrometer")
+    ap.add_argument("--data-dir", default=Path(__file__).resolve().parent / "data",
+                    help="where spectra and runs are saved (default: ./data)")
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="127.0.0.1 = this computer only; 0.0.0.0 = lab network")
+    ap.add_argument("--port", type=int, default=5001)
+    ap.add_argument("--no-browser", action="store_true")
+    args = ap.parse_args()
+
+    station = Station(args.data_dir, mock=args.mock)
     try:
-        wavelengths = spectrometer.wavelengths()
-        dark_spectrum = spectrometer.intensities()
-        return jsonify({
-            'success': True, 
-            'message': 'Dark spectrum captured',
-            'wavelengths': wavelengths.tolist(),
-            'spectrum': dark_spectrum.tolist()
-        })
+        station.connect()
+        print(f"Connected: {station.dev.info['model']} {station.dev.info['serial']}")
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        print(f"Spectrometer not connected ({e}). Use Connect in the browser.")
 
-@app.route('/api/capture_reference', methods=['POST'])
-def api_capture_reference():
-    """Capture a reference spectrum"""
-    global reference_spectrum, spectrometer, dark_spectrum
-    
-    if spectrometer is None:
-        return jsonify({'success': False, 'error': 'Spectrometer not initialized'})
-    
+    url = f"http://127.0.0.1:{args.port}"
+    print(f"Data folder: {station.data_dir}\nOpen {url}  (Ctrl+C to quit)")
+    if not args.no_browser:
+        threading.Timer(1.0, webbrowser.open, (url,)).start()
     try:
-        wavelengths = spectrometer.wavelengths()
-        reference_spectrum = spectrometer.intensities()
-        
-        # Also return dark-corrected version for display
-        display_spectrum = reference_spectrum.copy()
-        if dark_spectrum is not None:
-            display_spectrum = display_spectrum - dark_spectrum
-        
-        return jsonify({
-            'success': True, 
-            'message': 'Reference spectrum captured',
-            'wavelengths': wavelengths.tolist(),
-            'spectrum': reference_spectrum.tolist(),
-            'display_spectrum': display_spectrum.tolist()
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        create_app(station).run(host=args.host, port=args.port, threaded=True)
+    finally:
+        if station.run:
+            station.run.stop()
+            station.run.join(timeout=5)
+        if station.dev:
+            station.dev.close()
 
-@app.route('/api/clear_dark', methods=['POST'])
-def api_clear_dark():
-    """Clear the dark spectrum"""
-    global dark_spectrum
-    dark_spectrum = None
-    return jsonify({'success': True, 'message': 'Dark spectrum cleared'})
 
-@app.route('/api/clear_reference', methods=['POST'])
-def api_clear_reference():
-    """Clear the reference spectrum"""
-    global reference_spectrum
-    reference_spectrum = None
-    return jsonify({'success': True, 'message': 'Reference spectrum cleared'})
-
-@app.route('/api/start_live', methods=['POST'])
-def api_start_live():
-    """Start continuous acquisition"""
-    global is_acquiring, acquisition_thread, spectrometer
-    
-    if spectrometer is None:
-        return jsonify({'success': False, 'error': 'Spectrometer not initialized'})
-    
-    if not is_acquiring:
-        is_acquiring = True
-        acquisition_thread = threading.Thread(target=continuous_acquisition, daemon=True)
-        acquisition_thread.start()
-        return jsonify({'success': True, 'message': 'Live acquisition started'})
-    
-    return jsonify({'success': True, 'message': 'Already acquiring'})
-
-@app.route('/api/stop_live', methods=['POST'])
-def api_stop_live():
-    """Stop continuous acquisition"""
-    global is_acquiring
-    is_acquiring = False
-    return jsonify({'success': True, 'message': 'Live acquisition stopped'})
-
-@app.route('/api/get_spectrum', methods=['GET'])
-def api_get_spectrum():
-    """Get the current spectrum data"""
-    if current_spectrum_data is None:
-        return jsonify({'success': False, 'error': 'No data available'})
-    
-    return jsonify({
-        'success': True,
-        'data': current_spectrum_data
-    })
-
-@app.route('/api/capture_single', methods=['POST'])
-def api_capture_single():
-    """Capture a single spectrum"""
-    global spectrometer, dark_spectrum, reference_spectrum
-    
-    if spectrometer is None:
-        return jsonify({'success': False, 'error': 'Spectrometer not initialized'})
-    
-    try:
-        wavelengths = spectrometer.wavelengths()
-        intensities = spectrometer.intensities()
-        
-        print(f"Captured spectrum: {len(wavelengths)} points, wavelength range: {wavelengths[0]:.1f}-{wavelengths[-1]:.1f} nm")
-        
-        # Apply dark subtraction if available
-        if dark_spectrum is not None:
-            intensities = intensities - dark_spectrum
-            print("Dark spectrum subtracted")
-        
-        # Calculate absorbance if reference is available
-        absorbance = None
-        transmittance = None
-        if reference_spectrum is not None:
-            ref_corrected = reference_spectrum.copy()
-            if dark_spectrum is not None:
-                ref_corrected = ref_corrected - dark_spectrum
-            ref_corrected[ref_corrected <= 0] = 1e-10
-            intensities_safe = intensities.copy()
-            intensities_safe[intensities_safe <= 0] = 1e-10
-            
-            transmittance = intensities_safe / ref_corrected
-            absorbance = -np.log10(transmittance)
-            print("Absorbance/transmittance calculated")
-        
-        result = {
-            'success': True,
-            'data': {
-                'wavelengths': wavelengths.tolist(),
-                'intensities': intensities.tolist(),
-                'absorbance': absorbance.tolist() if absorbance is not None else None,
-                'transmittance': transmittance.tolist() if transmittance is not None else None,
-                'timestamp': time.time()
-            }
-        }
-        print(f"Returning data with {len(result['data']['wavelengths'])} wavelength points")
-        return jsonify(result)
-    except Exception as e:
-        print(f"Error in capture_single: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)})
-
-if __name__ == '__main__':
-    import sys
-    # Only initialize on the main process, not the reloader
-    if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
-        print("Starting server (initializing on first request)...")
-    else:
-        print("Initializing spectrometer...")
-        spec, error = initialize_spectrometer()
-        if error:
-            print(f"Warning: {error}")
-            print("You can try to initialize from the web interface.")
-        else:
-            print("Spectrometer initialized successfully!")
-    
-    print("\nWeb server starting...")
-    print("Open your browser and navigate to: http://localhost:5001")
-    app.run(debug=True, host='0.0.0.0', port=5001, threaded=True, use_reloader=True)
+if __name__ == "__main__":
+    main()

@@ -1,194 +1,164 @@
-# Ocean Optics Flame Spectrometer - Browser Interface
+# Flame Spectrometer: spectra and kinetics
 
-A modern, browser-based interface for controlling and acquiring spectra from the Ocean Optics Flame microspectrometer.
+Browser interface for an Ocean Optics / Ocean Insight Flame (USB2000+ protocol) via
+[python-seabreeze](https://github.com/ap--/python-seabreeze). Take named spectra, or
+run time-resolved kinetics with a start countdown, live single-wavelength traces, and
+event markers. Runs on Windows, macOS and Linux.
 
-## Features
+The original v1 interface is preserved at tag `v1.0.0` (`git checkout v1.0.0`).
 
-- 🔬 **Real-time Spectral Acquisition**: Live monitoring mode with continuous spectrum updates
-- 📊 **Multiple Display Modes**: View data as Intensity, Absorbance, or Transmittance
-- ⚫ **Dark Spectrum Correction**: Capture and subtract dark (zero) spectra
-- 📈 **Reference Spectrum**: Capture reference for absorbance/transmittance calculations
-- ⏱️ **Adjustable Integration Time**: Set acquisition time between 0.5 and 10 seconds
-- 🎯 **Single Shot Mode**: Capture individual spectra on demand
-- 💻 **Modern UI**: Clean, responsive interface with real-time status indicators
+## Install and start
 
-## Installation
+Needs Python 3.11 or newer.
 
-1. **Install Python dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+**Windows:** double-click `start.bat`. The first run creates a `.venv` folder and installs
+packages. USB drivers, once per computer, from an **administrator** prompt:
 
-2. **Install SeaBreeze backend** (if not already installed):
-   
-   For macOS:
-   ```bash
-   brew install libusb
-   ```
-   
-   For Linux:
-   ```bash
-   sudo apt-get install libusb-1.0-0-dev
-   ```
-   
-   For Windows:
-   - Download and install the Ocean Optics OmniDriver or follow SeaBreeze documentation
-
-## Usage
-
-1. **Connect your Ocean Optics Flame spectrometer** to your computer via USB
-
-2. **Start the web server**:
-   ```bash
-   python app.py
-   ```
-
-3. **Open your browser** and navigate to:
-   ```
-   http://localhost:5000
-   ```
-
-## Quick Start Guide
-
-### Initial Setup
-
-1. **Initialize Spectrometer**: Click "Initialize Spectrometer" to connect to your device
-2. **Set Integration Time**: Adjust the slider to set your desired integration time (0.5-10 seconds)
-
-### Calibration Workflow
-
-1. **Capture Dark Spectrum**:
-   - Block all light from entering the spectrometer
-   - Click "Capture Dark Spectrum"
-   - This will be automatically subtracted from all subsequent measurements
-
-2. **Capture Reference Spectrum** (optional, for absorbance/transmittance):
-   - Place your reference sample (e.g., blank cuvette, solvent)
-   - Click "Capture Reference Spectrum"
-   - This enables absorbance and transmittance display modes
-
-### Acquisition Modes
-
-#### Live Monitoring
-- Click "Start Live Monitoring" to begin continuous acquisition
-- The spectrum will update in real-time (~2 Hz)
-- Perfect for monitoring reactions or adjusting sample positioning
-- Click "Stop Live Monitoring" to pause
-
-#### Single Spectrum
-- Click "Capture Single Spectrum" to take one measurement
-- Ideal for recording individual samples
-
-### Display Modes
-
-Switch between different data representations:
-- **Intensity**: Raw intensity values (with dark subtraction if enabled)
-- **Absorbance**: -log₁₀(T) where T = I/I₀ (requires reference spectrum)
-- **Transmittance**: I/I₀ ratio (requires reference spectrum)
-
-## API Endpoints
-
-The Flask backend provides a RESTful API:
-
-- `POST /api/initialize` - Initialize spectrometer connection
-- `GET /api/status` - Get current system status
-- `POST /api/set_integration_time` - Set integration time (0.5-10s)
-- `POST /api/capture_dark` - Capture dark spectrum
-- `POST /api/capture_reference` - Capture reference spectrum
-- `POST /api/clear_dark` - Clear stored dark spectrum
-- `POST /api/clear_reference` - Clear stored reference spectrum
-- `POST /api/start_live` - Start continuous acquisition
-- `POST /api/stop_live` - Stop continuous acquisition
-- `GET /api/get_spectrum` - Get current spectrum data
-- `POST /api/capture_single` - Capture a single spectrum
-
-## File Structure
-
-```
-ocean/
-├── app.py                  # Flask backend server
-├── templates/
-│   └── index.html         # Frontend web interface
-├── test/
-│   ├── test_ocean.py      # Basic spectrometer test
-│   └── test_ocean_aq.py   # Acquisition test with plotting
-├── requirements.txt        # Python dependencies
-└── README.md              # This file
+```bat
+.venv\Scripts\seabreeze_os_setup
 ```
 
-## Troubleshooting
+If OceanView/OceanDirect is installed it may own the USB driver; if the Flame is not
+found, close OceanView, re-run `seabreeze_os_setup`, and replug.
 
-### Spectrometer Not Found
-- Ensure the device is properly connected via USB
-- Check that you have the correct drivers/permissions
-- On Linux, you may need to add udev rules for USB access
-- Try unplugging and reconnecting the device
+**macOS / Linux:** `./start.sh` (Linux: also run `.venv/bin/seabreeze_os_setup` once for udev rules).
 
-### Permission Errors (Linux/macOS)
+**By hand:**
+
 ```bash
-# Add your user to the appropriate group
-sudo usermod -a -G plugdev $USER
-# or
-sudo usermod -a -G dialout $USER
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt      # Windows: .venv\Scripts\pip ...
+.venv/bin/python app.py
 ```
 
-### Port Already in Use
-If port 5000 is already in use, modify `app.py`:
-```python
-app.run(debug=True, host='0.0.0.0', port=5001, threaded=True)
+The browser opens at <http://127.0.0.1:5001>. Options:
+
+| flag | meaning |
+|---|---|
+| `--mock` | simulated spectrometer (no hardware) for practice and testing |
+| `--data-dir PATH` | where files are saved (default `./data`) |
+| `--host 0.0.0.0` | allow other computers on the network to connect (default: this computer only) |
+| `--port N` | default 5001 |
+
+On a new computer, `python scripts/hardware_check.py` confirms the connection and reports how
+fast that machine can acquire.
+
+## Taking spectra
+
+1. Set **Integration (ms)** and **Averages**. Use **Start live** to adjust the sample and
+   watch for the red *SATURATED* readout.
+2. **Dark:** block the light, then click Take. **Reference:** put the blank in the beam, then click Take.
+   Both are tied to the integration time they were taken at: change the integration time and they
+   are flagged *stale* (red) and not applied until you retake them or change back.
+3. **Capture**, type a name and optional notes, then click **Save last capture**.
+
+Saved to `data/spectra/2026-11-18_143012_<name>.csv`, with columns
+`wavelength_nm, raw_counts, dark_counts, reference_counts, corrected_counts, absorbance`,
+plus a `.json` sidecar holding the settings and notes.
+
+Absorbance is left blank (NaN) wherever the reference has no usable light, instead
+of the false spikes clipping used to produce.
+
+## Kinetics
+
+On the **Kinetics** tab:
+
+| field | meaning |
+|---|---|
+| Delay before t = 0 | countdown after Start; use it to get to the sample. Acquisition begins at t = 0 |
+| Duration | seconds after t = 0 (0 = until you press Stop) |
+| Interval | time between spectra (0 = as fast as the integration time allows) |
+| Averages per point | frames averaged into each saved spectrum |
+| Trace wavelengths | up to 8, plotted live as absorbance (or counts) vs time. Click the spectrum on the Spectrum tab to add one |
+| Band ± | each trace averages wavelength ± this many nm |
+
+The checklist shows whether dark and reference are set and valid, and estimates the number of
+spectra and file size. During a run, **Mark** (or the **M** key) records a labeled event,
+such as *inject*, at the current time. Events marked during the countdown get negative times.
+Reloading the page during a run is safe: the run continues and the page catches up.
+
+**Every full spectrum is saved**, whatever trace wavelengths you choose, so you can extract
+any wavelength later. Each run gets its own folder, `data/kinetics/<date>_<time>_<name>/`:
+
+| file | contents |
+|---|---|
+| `counts.csv` | first column `time_s`, then one column per wavelength: dark-corrected counts |
+| `absorbance.csv` | same layout, if a reference was set |
+| `traces.csv` | `time_s` + the live trace wavelengths (small; quick to plot) |
+| `run.json` | settings, notes, events, timing statistics, dark and reference spectra, wavelength axis |
+| `run.h5` | everything above in one HDF5 file (tick *Also save HDF5*) |
+
+Timing: t = 0 is the end of the countdown, and each spectrum is stamped at the centre of its
+integration window, measured on a high-resolution clock. The detector free-runs, so a
+timestamp is accurate to about ±½ integration time. During a run, frames stream to
+disk as raw binary; the CSV and HDF5 files are written when the run ends (*writing files…*
+in the UI). If the program is interrupted mid-run, the raw `frames.f32` and `run.json` are
+kept and `run.json` explains the format.
+
+**Measured on Flame-S FLMS00863 (MacBook, with the UI polling):**
+
+| integration | rate | dropped frames |
+|---|---|---|
+| 2 ms | 500 Hz | ~0.3–0.8 % |
+| 5 ms | 200 Hz | ~0.1–0.4 % |
+| ≥ 20 ms | 1 / integration | ~0 |
+
+A dropped frame is only a gap; each spectrum keeps its own true timestamp.
+File sizes are about 16 kB per spectrum per CSV, so 10 min at 200 Hz is ~2 GB of CSV.
+Use HDF5 or a non-zero interval for long fast runs.
+
+## Detector corrections
+
+Every read applies the Flame's electric-dark and nonlinearity corrections (stored in its
+EEPROM, as in OceanView). Corrected counts can be slightly negative in the masked edge pixels.
+Pixel 1 of this unit is a hot pixel; the first two pixels are hidden in plots and excluded from
+the saturation check, but kept in saved files.
+
+## Development
+
+```bash
+.venv/bin/pip install pytest
+.venv/bin/python -m pytest          # runs against the simulated spectrometer
 ```
 
-## Technical Details
+GitHub Actions (`.github/workflows/ci.yml`) runs the tests and a SeaBreeze import check on
+Windows, macOS and Ubuntu with Python 3.11–3.13 on every push.
 
-- **Backend**: Flask (Python)
-- **Frontend**: Vanilla JavaScript with Plotly.js for visualization
-- **Spectrometer Interface**: SeaBreeze library
-- **Data Format**: JSON for client-server communication
-- **Threading**: Background thread for continuous acquisition
-
-## Advanced Usage
-
-### Programmatic Access
-
-You can also access the spectrometer programmatically:
-
-```python
-import requests
-
-# Capture a single spectrum
-response = requests.post('http://localhost:5000/api/capture_single')
-data = response.json()
-
-wavelengths = data['data']['wavelengths']
-intensities = data['data']['intensities']
+```
+app.py                     Flask server, routes, CLI
+spectro.py                 device access, processing, kinetic runs, saving, mock spectrometer
+templates/index.html       page
+static/app.js, style.css   UI (plain JS, no build step)
+static/plotly-basic.min.js Plotly 2.35.2, bundled so it works offline
+scripts/hardware_check.py  connection + timing check on real hardware
+tests/test_app.py          tests (no hardware needed)
 ```
 
-### Custom Integration Time via API
+### HTTP API
 
-```python
-import requests
+All POST bodies are JSON; responses carry `success` and `error`.
 
-requests.post('http://localhost:5000/api/set_integration_time', 
-              json={'time': 2.5})  # 2.5 seconds
-```
+| endpoint | |
+|---|---|
+| `GET /api/status` | device, settings, dark/reference validity, run state |
+| `POST /api/connect` | (re)connect |
+| `POST /api/settings` | `{integration_ms, n_avg}` |
+| `POST /api/dark`, `/api/reference` | take background; `/api/clear/dark`, `/api/clear/reference` |
+| `POST /api/capture` | one spectrum; `POST /api/save` `{name, notes}` saves it |
+| `POST /api/live/start`, `/api/live/stop`; `GET /api/live` | live view |
+| `POST /api/run/start` | `{name, notes, delay_s, duration_s, interval_s, n_avg, traces_nm, half_width_nm, save_hdf5}` |
+| `POST /api/run/stop`, `/api/run/mark` `{label}`; `GET /api/run/status?since=N` | run control and incremental data |
 
-## Safety Notes
+## Changes from v1
 
-- Always ensure proper dark spectrum calibration for accurate measurements
-- Reference spectra should be captured with the same integration time as your samples
-- The integration time slider is clamped between 0.5-10 seconds for safety
-- Dark and reference spectra persist until explicitly cleared or server restart
-
-## License
-
-This software is provided for research and educational purposes.
-
-## Support
-
-For issues related to:
-- **SeaBreeze library**: https://github.com/ap--/python-seabreeze
-- **Ocean Optics devices**: https://www.oceaninsight.com/
-
-## Version
-
-Current version: 1.0.0
+- Kinetics: countdown, scheduled or continuous acquisition, live traces, event markers, CSV/JSON/HDF5 output
+- Named spectra saved with notes and full provenance (raw, dark, reference, settings)
+- One lock around all USB access (v1 could read from two threads at once)
+- Dark/reference invalidated when the integration time changes; integration range is the
+  device's own (1 ms – 655 s) instead of 1 ms – 10 s
+- Absorbance is NaN where there is no light, instead of clipped to A = 10
+- Electric-dark and nonlinearity corrections enabled
+- Server listens on this computer only by default, with the debugger off (v1 exposed the
+  Werkzeug debugger, which allows remote code execution, to the network)
+- Plotly bundled locally (works offline); Flask-CORS dropped (not needed)
+- Simulated spectrometer, tests, and Windows/macOS/Linux CI
