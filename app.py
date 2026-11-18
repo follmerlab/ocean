@@ -36,6 +36,8 @@ class Station:
         self.live_frame = None
         self.run: KineticRun | None = None
         self.connect_error = None
+        self.measurement = "absorbance"   # "fluorescence": no reference, emission counts
+        self.excitation_nm: float | None = None
 
     def connect(self):
         if self.busy:
@@ -63,11 +65,27 @@ class Station:
     def valid(self, bg: Background | None):
         return bg.counts if bg is not None and bg.matches(self.dev) else None
 
+    @property
+    def fluorescence(self):
+        return self.measurement == "fluorescence"
+
+    def active_ref(self):
+        """The reference in use: none in fluorescence (emission is not ratioed)."""
+        return None if self.fluorescence else self.valid(self.ref)
+
+    def mode_meta(self):
+        meta = {"measurement": self.measurement}
+        if self.fluorescence:
+            meta["excitation_nm"] = self.excitation_nm
+            meta["background"] = "dark_counts slot = background (blank or excitation off)"
+        return meta
+
     def frame(self, raw, t=None):
         dev = self.dev
-        counts, absorbance = process(raw, self.valid(self.dark), self.valid(self.ref))
+        counts, absorbance = process(raw, self.valid(self.dark), self.active_ref())
         return {"wavelengths": jsonable(dev.wavelengths), "counts": for_display(counts),
                 "absorbance": for_display(absorbance), "saturated": dev.is_saturated(raw),
+                "saturated_nm": dev.saturated_ranges(raw), "integration_s": dev.integration_s,
                 "max_counts": float(raw[spectro.SKIP_PIXELS:].max()),
                 "time": t or time.time()}
 
@@ -119,6 +137,7 @@ def create_app(station: Station) -> Flask:
             device=dev.info if dev else None, mock=st.mock,
             integration_s=dev.integration_s if dev else None,
             n_avg=dev.n_avg if dev else 1, live=st.live, busy=st.busy,
+            measurement=st.measurement, excitation_nm=st.excitation_nm,
             dark=st.dark.summary(dev) if st.dark and dev else None,
             reference=st.ref.summary(dev) if st.ref and dev else None,
             run_state=st.run.state if st.run else None,
@@ -140,7 +159,17 @@ def create_app(station: Station) -> Flask:
             dev.set_integration(float(body["integration_ms"]) / 1000)
         if "n_avg" in body:
             dev.n_avg = min(max(int(body["n_avg"]), 1), 1000)
-        return ok(integration_s=dev.integration_s, n_avg=dev.n_avg)
+        if "measurement" in body:
+            if body["measurement"] not in ("absorbance", "fluorescence"):
+                raise ValueError("measurement must be absorbance or fluorescence")
+            st.measurement = body["measurement"]
+            if st.mock:
+                dev.spec.scene = st.measurement
+        if "excitation_nm" in body:
+            ex = body["excitation_nm"]
+            st.excitation_nm = float(ex) if ex not in (None, "") else None
+        return ok(integration_s=dev.integration_s, n_avg=dev.n_avg,
+                  measurement=st.measurement, excitation_nm=st.excitation_nm)
 
     def capture_background(kind):
         dev = st.require()
@@ -173,7 +202,8 @@ def create_app(station: Station) -> Flask:
         if st.busy:
             raise RuntimeError("A kinetic run is using the spectrometer.")
         raw, _ = dev.read()
-        st.last = {"raw": raw, "dark": st.valid(st.dark), "ref": st.valid(st.ref),
+        st.last = {"raw": raw, "dark": st.valid(st.dark), "ref": st.active_ref(),
+                   "mode": st.mode_meta(),
                    "integration_s": dev.integration_s, "n_avg": dev.n_avg,
                    "taken": datetime.now().isoformat(timespec="seconds")}
         return ok(data=st.frame(raw))
@@ -186,10 +216,12 @@ def create_app(station: Station) -> Flask:
         name = body.get("name") or "spectrum"
         L = st.last
         meta = {"taken": L["taken"], "integration_s": L["integration_s"],
-                "n_avg": L["n_avg"], "device": st.dev.info,
+                "n_avg": L["n_avg"], "device": st.dev.info, **L["mode"],
                 "detector_corrections": ["electric_dark", "nonlinearity"]}
+        fluo = L["mode"]["measurement"] == "fluorescence"
         path = spectro.save_spectrum(st.data_dir / "spectra", name, body.get("notes", ""),
-                                     st.dev.wavelengths, L["raw"], L["dark"], L["ref"], meta)
+                                     st.dev.wavelengths, L["raw"], L["dark"], L["ref"], meta,
+                                     "background_counts" if fluo else "dark_counts")
         return ok(file=str(path))
 
     @app.post("/api/live/<action>")
@@ -207,7 +239,11 @@ def create_app(station: Station) -> Flask:
         if st.busy:
             raise RuntimeError("A run is already in progress.")
         cfg = RunConfig.from_dict(request.get_json(force=True))
-        for bg, label in ((st.dark, "dark"), (st.ref, "reference")):
+        cfg.measurement, cfg.excitation_nm = st.measurement, st.excitation_nm
+        checks = [(st.dark, "background" if st.fluorescence else "dark")]
+        if not st.fluorescence:
+            checks.append((st.ref, "reference"))
+        for bg, label in checks:
             if bg is not None and not bg.matches(dev):
                 raise RuntimeError(f"The {label} was taken at {bg.integration_s*1000:g} ms "
                                    f"but the integration time is now "
@@ -216,7 +252,7 @@ def create_app(station: Station) -> Flask:
             raise RuntimeError("HDF5 needs h5py: pip install h5py")
         st.stop_live()
         time.sleep(dev.integration_s + 0.05)  # let the live loop release the device
-        st.run = KineticRun(dev, cfg, st.valid(st.dark), st.valid(st.ref), st.data_dir)
+        st.run = KineticRun(dev, cfg, st.valid(st.dark), st.active_ref(), st.data_dir)
         st.run.start()
         return ok(folder=str(st.run.folder))
 

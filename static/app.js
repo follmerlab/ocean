@@ -36,11 +36,28 @@ function layout(xt, yt, extra = {}) {
 const CONFIG = { responsive: true, displaylogo: false,
                  modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d"],
                  toImageButtonOptions: { format: "svg", filename: "spectrum" } };
-const yTitle = () => ({ counts: "Counts", absorbance: "Absorbance", transmittance: "Transmittance (%)" })[S.mode];
+const isFluo = () => !!(S.status && S.status.measurement === "fluorescence");
+const yTitle = () => ({ counts: isFluo() ? "Emission (counts)" : "Counts", cps: "Emission (counts/s)",
+                        absorbance: "Absorbance", transmittance: "Transmittance (%)" })[S.mode];
+// Dashed gray line at the excitation wavelength (fluorescence only)
+function exMarker(L) {
+  const ex = isFluo() && S.status.excitation_nm;
+  if (!ex) return;
+  L.shapes = [...(L.shapes || []), { type: "line", x0: ex, x1: ex, yref: "paper", y0: 0, y1: 1,
+                                     line: { color: "#999", width: 1, dash: "dash" } }];
+  L.annotations = [...(L.annotations || []), { x: ex, yref: "paper", y: 1, yanchor: "bottom", showarrow: false,
+                                               text: `ex ${ex} nm`, font: { size: 11, color: "#666" } }];
+}
+function fmtSat(f) {
+  if (!f.saturated) return "";
+  const r = (f.saturated_nm || []).map(([a, b]) => (b - a < 0.5 ? `${a}` : `${a}–${b}`)).join(", ");
+  return `  SATURATED${r ? " at " + r + " nm" : ""}`;
+}
 
 function signal(frame) {
   if (!frame) return null;
   if (S.mode === "counts") return frame.counts;
+  if (S.mode === "cps") return frame.counts.map((c) => (c === null ? null : c / frame.integration_s));
   if (!frame.absorbance) return null;
   if (S.mode === "absorbance") return frame.absorbance;
   return frame.absorbance.map((a) => (a === null ? null : 100 * Math.pow(10, -a)));
@@ -62,13 +79,13 @@ function drawSpectrum() {
     L.annotations = [{ text: "Press <b>Capture</b> or <b>Start live</b>", xref: "paper", yref: "paper",
                        x: 0.5, y: 0.5, showarrow: false, font: { size: 15, color: "#666" } }];
   }
+  exMarker(L);
   applyLimits(L, "plot-spectrum", f ? f.wavelengths : null, y ? [y] : []);
   if (f && !y && S.mode !== "counts") L.annotations = [{ text: "Take a reference to see absorbance", xref: "paper",
     yref: "paper", x: 0.5, y: 0.5, showarrow: false, font: { size: 15, color: "#666" } }];
   Plotly.react("plot-spectrum", traces, L, CONFIG);
   if (f) {
-    const sat = f.saturated ? "  SATURATED" : "";
-    $("readout").textContent = `max ${Math.round(f.max_counts).toLocaleString()} counts${sat}`;
+    $("readout").textContent = `max ${Math.round(f.max_counts).toLocaleString()} counts${fmtSat(f)}`;
     $("readout").style.color = f.saturated ? "#D62728" : "";
   }
 }
@@ -82,8 +99,7 @@ function drawTraces() {
                                         line: { color: "#999", width: 1, dash: "dash" } }));
   const annotations = S.events.map((e) => ({ x: e.t_s, yref: "paper", y: 1, yanchor: "bottom", text: e.label,
                                              showarrow: false, font: { size: 11, color: "#666" } }));
-  const hasRef = S.status && S.status.reference && S.status.reference.valid;
-  const L = layout("Time (s)", hasRef ? "Absorbance" : "Counts", {
+  const L = layout("Time (s)", hasRef() ? "Absorbance" : isFluo() ? "Emission (counts)" : "Counts", {
     shapes, annotations, showlegend: S.tracesNm.length > 0, uirevision: S.runT.length ? "traces" : "empty",
     margin: { l: 70, r: 20, t: 24, b: 55 },
     legend: { orientation: "h", x: 0, y: -0.22, font: { size: 12 } } });
@@ -95,11 +111,10 @@ function drawTraces() {
 function drawLatest(latest) {
   S.latest = latest;
   const traces = latest && S.wl ? [{ x: S.wl, y: latest.y, mode: "lines", line: { color: "#000", width: 1 } }] : [];
-  const yt = latest ? (latest.kind === "absorbance" ? "Absorbance" : "Counts") : "Signal";
+  const yt = latest ? (latest.kind === "absorbance" ? "Absorbance" : isFluo() ? "Emission (counts)" : "Counts") : "Signal";
   const L = layout("Wavelength (nm)", yt, {
-    uirevision: latest ? "latest:" + latest.kind : "empty", margin: { l: 70, r: 20, t: 24, b: 55 },
-    title: { text: latest ? `Latest spectrum · t = ${latest.t.toFixed(3)} s` : "", font: { size: 12 },
-             x: 0.98, xanchor: "right", y: 0.98 } });
+    uirevision: latest ? "latest:" + latest.kind : "empty", margin: { l: 70, r: 20, t: 24, b: 55 } });
+  exMarker(L);
   applyLimits(L, "plot-latest", S.wl, latest ? [latest.y] : []);
   if (!latest) placeholder(L, "Latest spectrum appears here during a run");
   Plotly.react("plot-latest", traces, L, CONFIG);
@@ -114,7 +129,7 @@ function placeholder(L, text) {
 // Each plot has x and y limits; a blank box is auto. y limits are kept per
 // quantity (counts vs absorbance), and everything is remembered by the browser.
 const LIMITS = JSON.parse(localStorage.getItem("axisLimits") || "{}");
-const hasRef = () => !!(S.status && S.status.reference && S.status.reference.valid);
+const hasRef = () => !isFluo() && !!(S.status && S.status.reference && S.status.reference.valid);
 const AXES = {
   "plot-spectrum": { xl: "λ (nm)", x: () => "wl", y: () => "spec:" + S.mode, redraw: () => drawSpectrum() },
   "plot-traces": { xl: "t (s)", x: () => "t", y: () => "tr:" + (hasRef() ? "absorbance" : "counts"),
@@ -187,6 +202,34 @@ function syncBar(id) {   // show the limits that apply right now (mode may have 
   }
 }
 
+// ------------------------------------------------------------------ measurement
+function applyMeasurementUI(s) {
+  const fl = s.measurement === "fluorescence";
+  document.querySelectorAll("#measurement button").forEach((b) => b.classList.toggle("on", b.dataset.m === s.measurement));
+  document.querySelectorAll(".abs-only").forEach((e) => e.classList.toggle("hidden", fl));
+  document.querySelectorAll(".fl-only").forEach((e) => e.classList.toggle("hidden", !fl));
+  $("ex-row").classList.toggle("hidden", !fl);
+  $("dark-label").textContent = fl ? "Background" : "Dark";
+  if (document.activeElement !== $("ex-nm")) $("ex-nm").value = s.excitation_nm ?? "";
+  const allowed = fl ? ["counts", "cps"] : ["counts", "absorbance", "transmittance"];
+  if (!allowed.includes(S.mode)) setMode("counts");
+  if (S.lastMeasurement !== s.measurement) {     // redraw labels once on a switch
+    S.lastMeasurement = s.measurement; drawSpectrum(); drawTraces(); drawLatest(S.latest);
+  }
+}
+function setMode(mode) {
+  S.mode = mode;
+  document.querySelectorAll("#mode button").forEach((x) => x.classList.toggle("on", x.dataset.mode === mode));
+  drawSpectrum();
+}
+async function setMeasurement(m) {
+  await act(async () => {
+    await api("/api/settings", { measurement: m });
+    S.frame = null; S.drawnEmpty = false;          // old curve was the other measurement
+    await refreshStatus();
+  });
+}
+
 // ------------------------------------------------------------------ status
 function fmtBg(bg) {
   if (!bg) return ["none", "muted"];
@@ -210,10 +253,12 @@ async function refreshStatus() {
       const [txt, cls] = fmtBg(s[key]);
       $(el).textContent = txt; $(el).className = cls;
     }
+    applyMeasurementUI(s);
     $("run-h5").disabled = !s.hdf5_available;
     $("btn-save").disabled = !s.has_last;
     const lock = s.busy || !s.connected;
-    for (const id of ["it-ms", "n-avg", "btn-live", "btn-capture", "btn-dark", "btn-ref"]) $(id).disabled = lock;
+    for (const id of ["it-ms", "n-avg", "btn-live", "btn-capture", "btn-dark", "btn-ref", "ex-nm"]) $(id).disabled = lock;
+    document.querySelectorAll("#measurement button").forEach((b) => (b.disabled = lock));
     $("btn-connect").disabled = s.busy;
     S.live = s.live;
     $("btn-live").textContent = s.live ? "Stop live" : "Start live";
@@ -252,9 +297,10 @@ function updateChecklist() {
   const items = [];
   items.push([s.connected ? "ok" : "bad", s.connected ? "Spectrometer connected" : "Spectrometer not connected"]);
   items.push(["ok", `Integration ${+(it * 1000).toPrecision(4)} ms`]);
-  const d = s.dark, r = s.reference;
-  items.push([!d ? "warn" : d.valid ? "ok" : "bad", !d ? "No dark (raw counts will be saved)" : d.valid ? "Dark set" : "Dark is stale: retake"]);
-  items.push([!r ? "warn" : r.valid ? "ok" : "bad", !r ? "No reference (no absorbance)" : r.valid ? "Reference set: absorbance" : "Reference is stale: retake"]);
+  const fl = isFluo(), d = s.dark, r = fl ? null : s.reference, bgName = fl ? "Background" : "Dark";
+  if (fl) items.push([s.excitation_nm ? "ok" : "warn", s.excitation_nm ? `Fluorescence, excitation ${s.excitation_nm} nm` : "Fluorescence: excitation wavelength not set"]);
+  items.push([!d ? "warn" : d.valid ? "ok" : "bad", !d ? `No ${bgName.toLowerCase()} (raw counts will be saved)` : d.valid ? `${bgName} set` : `${bgName} is stale: retake`]);
+  if (!fl) items.push([!r ? "warn" : r.valid ? "ok" : "bad", !r ? "No reference (no absorbance)" : r.valid ? "Reference set: absorbance" : "Reference is stale: retake"]);
   items.push([c.traces_nm.length ? "ok" : "warn", c.traces_nm.length ? `Traces at ${c.traces_nm.join(", ")} nm` : "No trace wavelengths (spectra still saved)"]);
   $("checklist").innerHTML = items.map(([k, t]) => `<li class="${k}">${t}</li>`).join("");
 
@@ -309,9 +355,12 @@ async function pollRun() {
     $("clock-label").textContent = { running: "elapsed", saving: "writing files…", done: "finished",
                                      aborted: "stopped", error: "error" }[run.state];
   }
-  const sat = run.saturated_frames ? ` · <span class="bad">${run.saturated_frames} saturated</span>` : "";
+  const lt = run.latest, where = lt && lt.saturated_nm && lt.saturated_nm.length
+    ? ` at ${lt.saturated_nm.map(([a, b]) => (b - a < 0.5 ? a : `${a}–${b}`)).join(", ")} nm` : "";
+  const sat = run.saturated_frames ? ` · <span class="bad">${run.saturated_frames} saturated${where}</span>` : "";
+  const latestT = lt ? `<br>Latest spectrum: t = ${lt.t.toFixed(3)} s` : "";
   const folder = run.folder.split(/[\\/]/).pop();
-  $("run-msg").innerHTML = `${run.n.toLocaleString()} spectra${sat}<br>Folder: <code title="${run.folder}">${folder}</code>`;
+  $("run-msg").innerHTML = `${run.n.toLocaleString()} spectra${sat}${latestT}<br>Folder: <code title="${run.folder}">${folder}</code>`;
   if (run.latest) drawLatest(run.latest);
   drawTraces();
   if (["done", "aborted", "error"].includes(run.state)) {
@@ -375,7 +424,7 @@ function init() {
   $("btn-capture").onclick = () => act(async () => {
     const j = await api("/api/capture", {});
     S.frame = j.data; S.wl = j.data.wavelengths; drawSpectrum(); refreshStatus();
-    if (j.data.saturated) banner("Detector saturated: lower the integration time.", "warn");
+    if (j.data.saturated) banner(`Detector ${fmtSat(j.data).trim().toLowerCase()}. Lower the integration time${isFluo() ? ", or ignore it if it is only the excitation line" : ""}.`, "warn");
   });
   $("btn-dark").onclick = () => takeBackground("dark");
   $("btn-ref").onclick = () => takeBackground("reference");
@@ -385,10 +434,12 @@ function init() {
     const j = await api("/api/save", { name: $("spec-name").value.trim() || "spectrum", notes: $("spec-notes").value });
     $("save-msg").innerHTML = `Saved <code>${j.file.split(/[\\/]/).pop()}</code>`;
   });
-  document.querySelectorAll("#mode button").forEach((b) => (b.onclick = () => {
-    document.querySelectorAll("#mode button").forEach((x) => x.classList.toggle("on", x === b));
-    S.mode = b.dataset.mode; drawSpectrum();
-  }));
+  document.querySelectorAll("#mode button").forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
+  document.querySelectorAll("#measurement button").forEach((b) => (b.onclick = () => setMeasurement(b.dataset.m)));
+  $("ex-nm").onchange = () => act(async () => {
+    await api("/api/settings", { excitation_nm: $("ex-nm").value === "" ? null : +$("ex-nm").value });
+    await refreshStatus(); drawSpectrum();
+  });
   document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => {
     document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("on", x === b));
     for (const t of ["spectrum", "kinetics"]) $("tab-" + t).classList.toggle("hidden", t !== b.dataset.tab);

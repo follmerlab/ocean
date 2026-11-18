@@ -1,9 +1,9 @@
 # Flame Spectrometer: spectra and kinetics
 
 Browser interface for an Ocean Optics / Ocean Insight Flame (USB2000+ protocol) via
-[python-seabreeze](https://github.com/ap--/python-seabreeze). Take named spectra, or
-run time-resolved kinetics with a start countdown, live single-wavelength traces, and
-event markers. Runs on Windows, macOS and Linux.
+[python-seabreeze](https://github.com/ap--/python-seabreeze). Take named absorbance or
+fluorescence spectra, or run time-resolved kinetics with a start countdown, live
+single-wavelength traces, and event markers. Runs on Windows, macOS and Linux.
 
 The original v1 interface is preserved at tag `v1.0.0` (`git checkout v1.0.0`).
 
@@ -42,6 +42,37 @@ The browser opens at <http://127.0.0.1:5001>. Options:
 
 On a new computer, `python scripts/hardware_check.py` confirms the connection and reports how
 fast that machine can acquire.
+
+## Measurement: absorbance or fluorescence
+
+Choose at the top of the sidebar.
+
+- **Absorbance:** dark + reference, shown as counts, absorbance or %T.
+- **Fluorescence:** emission counts, with no reference (any stored reference is ignored and
+  absorbance is never computed). *Dark* becomes **Background**. Use the blank with excitation on
+  to remove scatter and Raman lines, or excitation off for a plain dark. Enter the **excitation
+  wavelength**: it is marked on the plots and saved with every file. The display offers
+  **Counts/s** (counts ÷ integration time) for comparing spectra taken at different
+  integration times. Saved spectra name the column `background_counts`.
+
+Both modes work the same way for single spectra and for kinetics. A fluorescence kinetic
+run records emission versus time (photobleaching, binding, quenching, reaction progress).
+
+**Time resolution:** one spectrum per integration time, 1 ms at the fastest (about 2–5 ms
+in practice). The Flame cannot measure fluorescence lifetimes (ns–µs); those need TCSPC or a
+gated detector. Millisecond-scale decays after a pulsed source (e.g. lanthanide emission)
+would need the Flame's external trigger, which this version does not use.
+
+When the detector saturates, the readout says where (e.g. *SATURATED at 403.5–406.6 nm*). In
+fluorescence that is often just the excitation line and harmless to the emission band; a
+long-pass filter removes it.
+
+## Axis limits
+
+Each plot has x and y boxes above it. A blank box means auto, and either end can be set alone.
+Setting only the x window fits the y range to the data inside that window. **Lock view**
+freezes whatever you have zoomed to with the mouse, and **Auto** clears the limits. y
+limits are kept separately for counts, absorbance, etc., and the browser remembers them all.
 
 ## Taking spectra
 
@@ -142,7 +173,7 @@ All POST bodies are JSON; responses carry `success` and `error`.
 |---|---|
 | `GET /api/status` | device, settings, dark/reference validity, run state |
 | `POST /api/connect` | (re)connect |
-| `POST /api/settings` | `{integration_ms, n_avg}` |
+| `POST /api/settings` | `{integration_ms, n_avg, measurement: "absorbance"|"fluorescence", excitation_nm}` |
 | `POST /api/dark`, `/api/reference` | take background; `/api/clear/dark`, `/api/clear/reference` |
 | `POST /api/capture` | one spectrum; `POST /api/save` `{name, notes}` saves it |
 | `POST /api/live/start`, `/api/live/stop`; `GET /api/live` | live view |
@@ -152,6 +183,8 @@ All POST bodies are JSON; responses carry `success` and `error`.
 ## Changes from v1
 
 - Kinetics: countdown, scheduled or continuous acquisition, live traces, event markers, CSV/JSON/HDF5 output
+- Fluorescence mode (emission spectra and emission kinetics) alongside absorbance
+- Fixed or partial axis limits on every plot; saturation reported by wavelength
 - Named spectra saved with notes and full provenance (raw, dark, reference, settings)
 - One lock around all USB access (v1 could read from two threads at once)
 - Dark/reference invalidated when the integration time changes; integration range is the

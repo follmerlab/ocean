@@ -20,6 +20,15 @@
 <main>
   <aside>
     <section>
+      <h2>Measurement</h2>
+      <div class="seg" id="measurement">
+        <button data-m="absorbance" class="on">Absorbance</button>
+        <button data-m="fluorescence">Fluorescence</button>
+      </div>
+      <label id="ex-row" class="hidden" style="margin-top:8px">Excitation (nm)<input id="ex-nm" type="number" min="150" max="1100" step="any" placeholder="e.g. 405"></label>
+    </section>
+
+    <section>
       <h2>Acquisition</h2>
       <div class="row2">
         <label>Integration (ms)<input id="it-ms" type="number" min="1" step="any" value="100"></label>
@@ -31,22 +40,24 @@
       </div>
       <div class="seg" id="mode">
         <button data-mode="counts" class="on">Counts</button>
-        <button data-mode="absorbance">Absorbance</button>
-        <button data-mode="transmittance">%T</button>
+        <button data-mode="absorbance" class="abs-only">Absorbance</button>
+        <button data-mode="transmittance" class="abs-only">%T</button>
+        <button data-mode="cps" class="fl-only hidden">Counts/s</button>
       </div>
     </section>
 
     <section>
       <h2>Background</h2>
       <div class="bg-row">
-        <div><b>Dark</b><span id="dark-status" class="muted">none</span></div>
+        <div><b id="dark-label">Dark</b><span id="dark-status" class="muted">none</span></div>
         <button id="btn-dark" class="small">Take</button><button id="btn-dark-clear" class="small ghost">Clear</button>
       </div>
-      <div class="bg-row">
+      <div class="bg-row abs-only">
         <div><b>Reference</b><span id="ref-status" class="muted">none</span></div>
         <button id="btn-ref" class="small">Take</button><button id="btn-ref-clear" class="small ghost">Clear</button>
       </div>
-      <p class="hint">Block the light for dark; blank in the beam for reference. Both are tied to the integration time they were taken at.</p>
+      <p class="hint abs-only">Block the light for dark; blank in the beam for reference. Both are tied to the integration time they were taken at.</p>
+      <p class="hint fl-only hidden">Background: the blank (solvent) with excitation on removes scatter and Raman lines; with excitation off it is a plain dark. Tied to the integration time it was taken at.</p>
     </section>
 
     <section>

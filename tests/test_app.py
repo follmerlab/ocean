@@ -171,3 +171,45 @@ def test_process_block_matches_rows():
     for i in range(5):
         ci, ai = spectro.process(raw[i], dark, ref)
         assert np.allclose(c[i], ci) and np.allclose(a[i], ai, equal_nan=True)
+
+
+def test_fluorescence_mode(client):
+    # A reference left over from absorbance work must be ignored, even when stale.
+    post(client, "/api/settings", {"integration_ms": 10})
+    post(client, "/api/reference")
+    r = post(client, "/api/settings", {"measurement": "fluorescence", "excitation_nm": 405,
+                                       "integration_ms": 20})
+    assert r["measurement"] == "fluorescence" and r["excitation_nm"] == 405
+    client.station.dev.spec.sample_in = False          # blank: scatter only
+    post(client, "/api/dark")
+    client.station.dev.spec.sample_in = True
+    d = post(client, "/api/capture")["data"]
+    assert d["absorbance"] is None
+    wl = np.array(d["wavelengths"]); c = np.array(d["counts"], dtype=float)
+    assert c[np.argmin(abs(wl - 600))] > 20 * abs(c[np.argmin(abs(wl - 405))])  # scatter removed
+
+    path = Path(post(client, "/api/save", {"name": "emission"})["file"])
+    header = path.read_text().splitlines()[0].split(",")
+    assert "background_counts" in header and "absorbance" not in header
+    meta = json.loads(path.with_suffix(".json").read_text())
+    assert meta["measurement"] == "fluorescence" and meta["excitation_nm"] == 405
+
+    r = post(client, "/api/run/start", {"duration_s": 0.5, "traces_nm": [600]})
+    assert r["success"], r                               # stale reference does not block
+    run = wait_run(client)
+    folder = Path(run["folder"])
+    assert not (folder / "absorbance.csv").exists() and (folder / "counts.csv").exists()
+    cfg = json.loads((folder / "run.json").read_text())["config"]
+    assert cfg["measurement"] == "fluorescence" and cfg["excitation_nm"] == 405
+    assert run["y"][0][0] > 1000                         # emission counts at 600 nm
+
+
+def test_saturation_reports_where(client):
+    post(client, "/api/settings", {"measurement": "fluorescence", "integration_ms": 50})
+    d = post(client, "/api/capture")["data"]             # only the 405 nm scatter saturates
+    assert d["saturated"] and len(d["saturated_nm"]) == 1
+    lo, hi = d["saturated_nm"][0]
+    assert 400 < lo <= hi < 410
+    post(client, "/api/settings", {"integration_ms": 200})
+    d = post(client, "/api/capture")["data"]             # scatter and emission: two regions
+    assert len(d["saturated_nm"]) == 2 and d["saturated_nm"][1][0] > 500

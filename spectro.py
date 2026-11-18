@@ -30,8 +30,9 @@ MIN_REF_COUNTS = 50.0    # below this the reference has no usable light -> absor
 class MockSpectrometer:
     """Stands in for seabreeze.spectrometers.Spectrometer (same method names).
 
-    Simulates a halogen-like lamp through a sample whose 520 nm band bleaches
-    with a 30 s lifetime, so kinetics can be exercised without hardware.
+    scene "absorbance": a halogen-like lamp through a sample whose 520 nm band
+    bleaches with a 30 s lifetime. scene "fluorescence": 405 nm laser scatter
+    plus a 600 nm emission band that photobleaches with a 20 s lifetime.
     """
     model = "MOCK"
     serial_number = "MOCK0001"
@@ -45,6 +46,7 @@ class MockSpectrometer:
         self._t0 = time.perf_counter()
         self._rng = np.random.default_rng(seed)
         self.sample_in = True
+        self.scene = "absorbance"
 
     def wavelengths(self):
         return self._wl.copy()
@@ -54,8 +56,14 @@ class MockSpectrometer:
 
     def intensities(self, correct_dark_counts=False, correct_nonlinearity=False):
         time.sleep(self._it_s)
-        lamp = 3.0e6 * self._it_s * np.exp(-(((self._wl - 620.0) / 160.0) ** 2))
         t = time.perf_counter() - self._t0
+        if self.scene == "fluorescence":
+            laser = 5.0e6 * self._it_s * np.exp(-(((self._wl - 405.0) / 1.5) ** 2))
+            emission = (4.0e5 * self._it_s * math.exp(-t / 20.0)
+                        * np.exp(-(((self._wl - 600.0) / 40.0) ** 2)))
+            raw = 1500.0 + laser + (emission if self.sample_in else 0)
+            return np.clip(raw + self._rng.normal(0, 12, self.pixels), 0, self.max_intensity)
+        lamp = 3.0e6 * self._it_s * np.exp(-(((self._wl - 620.0) / 160.0) ** 2))
         a = 0.8 * math.exp(-t / 30.0) * np.exp(-(((self._wl - 520.0) / 25.0) ** 2))
         signal = lamp * 10 ** (-a) if self.sample_in else lamp
         raw = 1500.0 + signal + self._rng.normal(0, 12, self.pixels)
@@ -129,6 +137,13 @@ class Device:
 
     def is_saturated(self, raw):
         return bool(raw[SKIP_PIXELS:].max() >= SATURATION_FRACTION * self.max_counts)
+
+    def saturated_ranges(self, raw):
+        """[[start, end] nm, ...] for each saturated region, e.g. a laser scatter line."""
+        hit = np.flatnonzero(raw[SKIP_PIXELS:] >= SATURATION_FRACTION * self.max_counts)
+        wl = self.wavelengths[SKIP_PIXELS:]
+        runs = np.split(hit, np.flatnonzero(np.diff(hit) > 1) + 1) if hit.size else []
+        return [[round(float(wl[r[0]]), 1), round(float(wl[r[-1]]), 1)] for r in runs]
 
     def close(self):
         with self.lock:
@@ -225,11 +240,12 @@ def stamped_path(folder: Path, name: str, suffix: str = "") -> Path:
     return p
 
 
-def save_spectrum(folder: Path, name: str, notes: str, wl, raw, dark, ref, meta: dict):
+def save_spectrum(folder: Path, name: str, notes: str, wl, raw, dark, ref, meta: dict,
+                  dark_label: str = "dark_counts"):
     counts, absorbance = process(raw, dark, ref)
     cols = {"wavelength_nm": wl, "raw_counts": raw}
     if dark is not None:
-        cols["dark_counts"] = dark
+        cols[dark_label] = dark
     if ref is not None:
         cols["reference_counts"] = ref
     cols["corrected_counts"] = counts
@@ -256,6 +272,8 @@ class RunConfig:
     traces_nm: list = field(default_factory=lambda: [])
     half_width_nm: float = 2.0
     save_hdf5: bool = False
+    measurement: str = "absorbance"   # or "fluorescence" (set by the server)
+    excitation_nm: float | None = None
 
     @classmethod
     def from_dict(cls, d: dict):
@@ -338,6 +356,7 @@ class KineticRun(threading.Thread):
         if latest is not None:  # convert outside the lock; send only the plotted curve
             counts, absorbance = process(latest["raw"], self.dark, self.ref)
             out["latest"] = {"t": latest["t"], "saturated": latest["saturated"],
+                             "saturated_nm": self.dev.saturated_ranges(latest["raw"]),
                              "kind": "counts" if absorbance is None else "absorbance",
                              "y": for_display(counts if absorbance is None else absorbance)}
         return out
