@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+# Acquired data (keep the code repo clean)
+data/
+*.csv
+*.json.gz
+# Editor
+.vscode/
+.idea/
