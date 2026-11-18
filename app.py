@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import threading
 import time
 import webbrowser
@@ -263,6 +264,11 @@ def main():
     print(f"Data folder: {station.data_dir}\nOpen {url}  (Ctrl+C to quit)")
     if not args.no_browser:
         threading.Timer(1.0, webbrowser.open, (url,)).start()
+    # Single-user instrument app: hide Flask's "development server" banner and the
+    # per-request log lines from the UI polling several times a second.
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+    import flask.cli
+    flask.cli.show_server_banner = lambda *a, **k: None
     try:
         create_app(station).run(host=args.host, port=args.port, threaded=True)
     finally:
