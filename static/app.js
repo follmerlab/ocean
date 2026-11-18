@@ -62,6 +62,7 @@ function drawSpectrum() {
     L.annotations = [{ text: "Press <b>Capture</b> or <b>Start live</b>", xref: "paper", yref: "paper",
                        x: 0.5, y: 0.5, showarrow: false, font: { size: 15, color: "#666" } }];
   }
+  applyLimits(L, "plot-spectrum", f ? f.wavelengths : null, y ? [y] : []);
   if (f && !y && S.mode !== "counts") L.annotations = [{ text: "Take a reference to see absorbance", xref: "paper",
     yref: "paper", x: 0.5, y: 0.5, showarrow: false, font: { size: 15, color: "#666" } }];
   Plotly.react("plot-spectrum", traces, L, CONFIG);
@@ -86,17 +87,20 @@ function drawTraces() {
     shapes, annotations, showlegend: S.tracesNm.length > 0, uirevision: S.runT.length ? "traces" : "empty",
     margin: { l: 70, r: 20, t: 24, b: 55 },
     legend: { orientation: "h", x: 0, y: -0.22, font: { size: 12 } } });
+  applyLimits(L, "plot-traces", S.runT, ys.map((tr) => tr.y));
   if (!S.runT.length) placeholder(L, S.runPoll ? "Waiting for t = 0" : "Kinetic traces appear here");
   Plotly.react("plot-traces", ys, L, CONFIG);
 }
 
 function drawLatest(latest) {
+  S.latest = latest;
   const traces = latest && S.wl ? [{ x: S.wl, y: latest.y, mode: "lines", line: { color: "#000", width: 1 } }] : [];
   const yt = latest ? (latest.kind === "absorbance" ? "Absorbance" : "Counts") : "Signal";
   const L = layout("Wavelength (nm)", yt, {
     uirevision: latest ? "latest:" + latest.kind : "empty", margin: { l: 70, r: 20, t: 24, b: 55 },
     title: { text: latest ? `Latest spectrum · t = ${latest.t.toFixed(3)} s` : "", font: { size: 12 },
              x: 0.98, xanchor: "right", y: 0.98 } });
+  applyLimits(L, "plot-latest", S.wl, latest ? [latest.y] : []);
   if (!latest) placeholder(L, "Latest spectrum appears here during a run");
   Plotly.react("plot-latest", traces, L, CONFIG);
 }
@@ -104,6 +108,83 @@ function placeholder(L, text) {
   L.xaxis.showticklabels = L.yaxis.showticklabels = false;
   L.annotations = [...(L.annotations || []), { text, xref: "paper", yref: "paper", x: 0.5, y: 0.5,
                                                showarrow: false, font: { size: 14, color: "#666" } }];
+}
+
+// ------------------------------------------------------------------ axis limits
+// Each plot has x and y limits; a blank box is auto. y limits are kept per
+// quantity (counts vs absorbance), and everything is remembered by the browser.
+const LIMITS = JSON.parse(localStorage.getItem("axisLimits") || "{}");
+const hasRef = () => !!(S.status && S.status.reference && S.status.reference.valid);
+const AXES = {
+  "plot-spectrum": { xl: "λ (nm)", x: () => "wl", y: () => "spec:" + S.mode, redraw: () => drawSpectrum() },
+  "plot-traces": { xl: "t (s)", x: () => "t", y: () => "tr:" + (hasRef() ? "absorbance" : "counts"),
+                   redraw: () => drawTraces() },
+  "plot-latest": { xl: "λ (nm)", x: () => "wl", y: () => "lat:" + (S.latest ? S.latest.kind : "counts"),
+                   redraw: () => drawLatest(S.latest) },
+};
+const getLim = (k) => LIMITS[k] || [null, null];
+const isSet = (l) => l[0] !== null || l[1] !== null;
+
+function setLim(k, lim) {
+  if (isSet(lim)) LIMITS[k] = lim; else delete LIMITS[k];
+  localStorage.setItem("axisLimits", JSON.stringify(LIMITS));
+}
+
+// Fix the axes in layout L. Missing bounds come from the data, and an automatic
+// y range is fitted to the points inside the x window (not the whole spectrum).
+function applyLimits(L, id, xs, ysList) {
+  const A = AXES[id], xl = getLim(A.x()), yl = getLim(A.y());
+  syncBar(id);
+  if (!isSet(xl) && !isSet(yl)) return;
+  L.uirevision += ":" + JSON.stringify([xl, yl]);
+  let [x0, x1] = xl;
+  if ((x0 === null || x1 === null) && xs && xs.length) {
+    x0 ??= Math.min(xs[0], xs[xs.length - 1]); x1 ??= Math.max(xs[0], xs[xs.length - 1]);
+  }
+  if (x0 === null || x1 === null) return;
+  if (x0 > x1) [x0, x1] = [x1, x0];
+  L.xaxis.range = [x0, x1]; L.xaxis.autorange = false;
+  let [y0, y1] = yl;
+  if (y0 === null || y1 === null) {
+    let lo = Infinity, hi = -Infinity;
+    for (const ys of ysList || []) for (let i = 0; i < xs.length; i++) {
+      const v = ys[i];
+      if (v !== null && xs[i] >= x0 && xs[i] <= x1) { if (v < lo) lo = v; if (v > hi) hi = v; }
+    }
+    if (lo > hi) return;                       // no data in the window yet
+    const pad = (hi - lo) * 0.05 || Math.abs(hi) * 0.05 || 1;
+    y0 ??= lo - pad; y1 ??= hi + pad;
+  }
+  if (y0 > y1) [y0, y1] = [y1, y0];
+  L.yaxis.range = [y0, y1]; L.yaxis.autorange = false;
+}
+
+function axisBar(id) {
+  const plot = $(id), box = document.createElement("div"), bar = document.createElement("div");
+  bar.className = "axbar"; bar.id = "bar-" + id;
+  bar.innerHTML = `<span>${AXES[id].xl}</span><input data-k="x0" placeholder="auto"><i>–</i><input data-k="x1" placeholder="auto">
+    <span>y</span><input data-k="y0" placeholder="auto"><i>–</i><input data-k="y1" placeholder="auto">
+    <button class="small ghost" data-act="view" title="Zoom with the mouse, then lock that view">Lock view</button>
+    <button class="small ghost" data-act="auto">Auto</button>`;
+  plot.replaceWith(box); box.append(bar, plot);
+  const val = (k) => { const v = bar.querySelector(`[data-k=${k}]`).value.trim(); return v === "" || isNaN(+v) ? null : +v; };
+  bar.querySelectorAll("input").forEach((inp) => (inp.onchange = () => {
+    setLim(AXES[id].x(), [val("x0"), val("x1")]); setLim(AXES[id].y(), [val("y0"), val("y1")]); AXES[id].redraw();
+  }));
+  bar.querySelector("[data-act=view]").onclick = () => {
+    const r = (a) => (plot.layout[a].range || []).map((v) => +(+v).toPrecision(5));
+    setLim(AXES[id].x(), r("xaxis")); setLim(AXES[id].y(), r("yaxis")); AXES[id].redraw();
+  };
+  bar.querySelector("[data-act=auto]").onclick = () => { setLim(AXES[id].x(), [null, null]); setLim(AXES[id].y(), [null, null]); AXES[id].redraw(); };
+}
+
+function syncBar(id) {   // show the limits that apply right now (mode may have changed)
+  const bar = $("bar-" + id); if (!bar) return;
+  const [x0, x1] = getLim(AXES[id].x()), [y0, y1] = getLim(AXES[id].y());
+  for (const [k, v] of [["x0", x0], ["x1", x1], ["y0", y0], ["y1", y1]]) {
+    const inp = bar.querySelector(`[data-k=${k}]`);
+    if (document.activeElement !== inp) inp.value = v ?? "";
+  }
 }
 
 // ------------------------------------------------------------------ status
@@ -324,6 +405,7 @@ function init() {
     if (e.key.toLowerCase() === "m" && !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) mark();
   });
 
+  Object.keys(AXES).forEach(axisBar);
   drawSpectrum(); drawTraces(); drawLatest(null);
   document.getElementById("plot-spectrum").on("plotly_click", (ev) => addTrace(ev.points[0].x));
   refreshStatus();

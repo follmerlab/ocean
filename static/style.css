@@ -68,7 +68,7 @@ button.big { padding: 12px; font-size: 16px; }
 .readout { margin-left: auto; font-size: 12px; color: var(--muted); font-family: Menlo, Consolas, monospace; }
 
 .plot { width: 100%; height: 340px; }
-.plot.tall { height: calc(100vh - 170px); min-height: 420px; }
+.plot.tall { height: calc(100vh - 205px); min-height: 400px; }
 .plots2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
 
 .kin-grid { display: grid; grid-template-columns: 1fr 300px; gap: 20px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
@@ -90,3 +90,10 @@ button.big { padding: 12px; font-size: 16px; }
   main { grid-template-columns: 1fr; }
   .kin-grid, .plots2 { grid-template-columns: 1fr; }
 }
+
+.axbar { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #333; padding: 4px 0 2px; flex-wrap: wrap; }
+.axbar span { font-weight: 700; margin-left: 8px; }
+.axbar span:first-child { margin-left: 0; }
+.axbar input { width: 72px; margin: 0; padding: 3px 6px; font-size: 12px; }
+.axbar i { font-style: normal; color: #888; }
+.axbar button { margin-left: 4px; }
