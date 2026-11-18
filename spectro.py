@@ -21,7 +21,9 @@ except ImportError:  # HDF5 output is optional
     h5py = None
 
 SKIP_PIXELS = 2          # Flame-S: pixel 1 is a hot pixel; exclude from saturation checks
-SATURATION_FRACTION = 0.98
+# FLMS00863 plateaus at ~64000 ADC under broad saturation (below 0.98 * 65535), so
+# flag at 95%. Saturation is judged on uncorrected ADC values (see Device._read_raw).
+SATURATION_FRACTION = 0.95
 MIN_REF_COUNTS = 50.0    # below this the reference has no usable light -> absorbance = NaN
 
 
@@ -117,32 +119,50 @@ class Device:
         return seconds
 
     def _read_raw(self):
-        try:
-            return np.asarray(self.spec.intensities(correct_dark_counts=True,
-                                                    correct_nonlinearity=True), dtype=float)
-        except TypeError:  # backends without correction kwargs
-            return np.asarray(self.spec.intensities(), dtype=float)
+        """One frame -> (corrected counts, saturated-pixel mask).
+
+        Saturation is judged on the uncorrected ADC values: the corrections lower
+        the ceiling (on FLMS00863, 65535 ADC reads as ~62000 corrected), so a
+        threshold on corrected counts would never fire. The corrections are the
+        same ones seabreeze applies for correct_dark_counts + correct_nonlinearity.
+        """
+        adc = np.asarray(self.spec.intensities(), dtype=float)
+        sat = adc >= SATURATION_FRACTION * self.max_counts
+        # Light always spans several pixels (~0.34 nm/pixel); a lone saturated pixel is
+        # a hot pixel (FLMS00863 has one at 463.4 nm that saturates at ~8 s).
+        sat &= np.roll(sat, 1) | np.roll(sat, -1)
+        dark_px = getattr(self.spec, "_dp", None)       # electric-dark pixel indices
+        nonlin = getattr(self.spec, "_nc", None)        # nonlinearity polynomial
+        if not dark_px:
+            return adc, sat
+        out = adc - adc[dark_px].mean()
+        if nonlin is not None:
+            out = out / np.polyval(nonlin, out)
+        return out, sat
 
     def read(self, n_avg: int | None = None):
-        """Average ``n_avg`` frames. Returns (counts, t_center) with t_center on the
-        perf_counter clock at the middle of the integration window(s)."""
+        """Average ``n_avg`` frames. Returns (counts, t_center, saturated_mask);
+        t_center is on the perf_counter clock at the middle of the integration
+        window(s), and a pixel counts as saturated if it was in any frame."""
         n = max(1, int(n_avg or self.n_avg))
         with self.lock:
-            acc = self._read_raw()
+            acc, sat = self._read_raw()
             for _ in range(n - 1):
-                acc += self._read_raw()
+                a, s = self._read_raw()
+                acc, sat = acc + a, sat | s
             t_end = time.perf_counter()
             span = n * self.integration_s
-        return acc / n, t_end - span / 2
+        return acc / n, t_end - span / 2, sat
 
-    def is_saturated(self, raw):
-        return bool(raw[SKIP_PIXELS:].max() >= SATURATION_FRACTION * self.max_counts)
+    def is_saturated(self, sat):
+        return bool(sat[SKIP_PIXELS:].any())
 
-    def saturated_ranges(self, raw):
+    def saturated_ranges(self, sat):
         """[[start, end] nm, ...] for each saturated region, e.g. a laser scatter line."""
-        hit = np.flatnonzero(raw[SKIP_PIXELS:] >= SATURATION_FRACTION * self.max_counts)
+        hit = np.flatnonzero(sat[SKIP_PIXELS:])
         wl = self.wavelengths[SKIP_PIXELS:]
-        runs = np.split(hit, np.flatnonzero(np.diff(hit) > 1) + 1) if hit.size else []
+        # Regions less than ~10 pixels (~3 nm) apart are one region flickering at the edge
+        runs = np.split(hit, np.flatnonzero(np.diff(hit) > 10) + 1) if hit.size else []
         return [[round(float(wl[r[0]]), 1), round(float(wl[r[-1]]), 1)] for r in runs]
 
     def close(self):
@@ -356,7 +376,7 @@ class KineticRun(threading.Thread):
         if latest is not None:  # convert outside the lock; send only the plotted curve
             counts, absorbance = process(latest["raw"], self.dark, self.ref)
             out["latest"] = {"t": latest["t"], "saturated": latest["saturated"],
-                             "saturated_nm": self.dev.saturated_ranges(latest["raw"]),
+                             "saturated_nm": self.dev.saturated_ranges(latest["sat"]),
                              "kind": "counts" if absorbance is None else "absorbance",
                              "y": for_display(counts if absorbance is None else absorbance)}
         return out
@@ -393,7 +413,7 @@ class KineticRun(threading.Thread):
                     wait = self.t_zero + k * cfg.interval_s - time.perf_counter()
                     if wait > 0 and self._halt.wait(wait):
                         break
-                raw, t_mid = self.dev.read(cfg.n_avg)
+                raw, t_mid, satm = self.dev.read(cfg.n_avg)
                 t = t_mid - self.t_zero
                 if cfg.duration_s and t > cfg.duration_s:
                     break
@@ -408,13 +428,13 @@ class KineticRun(threading.Thread):
                         r = ref_c[m].mean()
                         ys.append(round(float(-np.log10(c / r)), 6)
                                   if c > 0 and r > MIN_REF_COUNTS else None)
-                sat = self.dev.is_saturated(raw)
+                sat = self.dev.is_saturated(satm)
                 with self._lock:
                     self.n += 1
                     self.saturated_frames += sat
                     self.trace_t.append(round(t, 5))
                     self.trace_y.append(ys)
-                    self.latest = {"t": t, "saturated": sat, "raw": raw}
+                    self.latest = {"t": t, "saturated": sat, "raw": raw, "sat": satm}
                 k += 1
                 if cfg.interval_s > 0:  # skip slots already missed rather than bursting
                     k = max(k, int((time.perf_counter() - self.t_zero) / cfg.interval_s) + 1)

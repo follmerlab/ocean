@@ -80,12 +80,12 @@ class Station:
             meta["background"] = "dark_counts slot = background (blank or excitation off)"
         return meta
 
-    def frame(self, raw, t=None):
+    def frame(self, raw, sat, t=None):
         dev = self.dev
         counts, absorbance = process(raw, self.valid(self.dark), self.active_ref())
         return {"wavelengths": jsonable(dev.wavelengths), "counts": for_display(counts),
-                "absorbance": for_display(absorbance), "saturated": dev.is_saturated(raw),
-                "saturated_nm": dev.saturated_ranges(raw), "integration_s": dev.integration_s,
+                "absorbance": for_display(absorbance), "saturated": dev.is_saturated(sat),
+                "saturated_nm": dev.saturated_ranges(sat), "integration_s": dev.integration_s,
                 "max_counts": float(raw[spectro.SKIP_PIXELS:].max()),
                 "time": t or time.time()}
 
@@ -104,8 +104,8 @@ class Station:
     def _live_loop(self):
         while self.live and self.dev is not None:
             try:
-                raw, _ = self.dev.read()
-                self.live_frame = self.frame(raw)
+                raw, _, sat = self.dev.read()
+                self.live_frame = self.frame(raw, sat)
             except Exception as e:
                 self.live_frame = {"error": str(e)}
                 time.sleep(0.5)
@@ -175,10 +175,10 @@ def create_app(station: Station) -> Flask:
         dev = st.require()
         if st.busy:
             raise RuntimeError("A kinetic run is using the spectrometer.")
-        raw, _ = dev.read()
+        raw, _, sat = dev.read()
         bg = Background(raw, dev.integration_s, dev.n_avg)
         setattr(st, kind, bg)
-        return ok(**{kind: bg.summary(dev)}, saturated=dev.is_saturated(raw),
+        return ok(**{kind: bg.summary(dev)}, saturated=dev.is_saturated(sat),
                   counts=jsonable(raw))
 
     @app.post("/api/dark")
@@ -201,12 +201,12 @@ def create_app(station: Station) -> Flask:
         dev = st.require()
         if st.busy:
             raise RuntimeError("A kinetic run is using the spectrometer.")
-        raw, _ = dev.read()
+        raw, _, sat = dev.read()
         st.last = {"raw": raw, "dark": st.valid(st.dark), "ref": st.active_ref(),
                    "mode": st.mode_meta(),
                    "integration_s": dev.integration_s, "n_avg": dev.n_avg,
                    "taken": datetime.now().isoformat(timespec="seconds")}
-        return ok(data=st.frame(raw))
+        return ok(data=st.frame(raw, sat))
 
     @app.post("/api/save")
     def save():

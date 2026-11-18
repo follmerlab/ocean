@@ -213,3 +213,38 @@ def test_saturation_reports_where(client):
     post(client, "/api/settings", {"integration_ms": 200})
     d = post(client, "/api/capture")["data"]             # scatter and emission: two regions
     assert len(d["saturated_nm"]) == 2 and d["saturated_nm"][1][0] > 500
+
+
+class _CorrectedFake(spectro.MockSpectrometer):
+    """Like the real Flame: electric-dark pixels + nonlinearity polynomial, which
+    pull a saturated 65535 ADC reading down to ~62000 corrected counts."""
+    _dp = list(range(2, 20))
+    _nc = np.poly1d([1e-6, 1.0])          # gain rises slightly with signal
+
+    def intensities(self, **kw):
+        time.sleep(self._it_s)
+        adc = np.full(self.pixels, 2100.0)
+        adc[1000:1010] = 64000.0           # broad saturation plateau (below 98 % of 65535)
+        adc[1500] = 65535.0                 # isolated hot pixel: not saturation
+        return adc
+
+
+def test_saturation_detected_through_corrections():
+    dev = spectro.Device(_CorrectedFake())
+    counts, _, sat = dev.read()
+    assert counts[1000:1010].max() < 0.98 * 65535   # corrected plateau is below the old threshold
+    assert dev.is_saturated(sat)           # ...but saturation is still caught
+    assert len(dev.saturated_ranges(sat)) == 1      # hot pixel ignored
+    lo, hi = dev.saturated_ranges(sat)[0]
+    wl = dev.wavelengths
+    assert lo == pytest.approx(wl[1000], abs=0.1) and hi == pytest.approx(wl[1009], abs=0.1)
+    assert abs(counts[500]) < 1e-6         # electric-dark offset removed
+
+
+def test_saturated_ranges_merge_flicker():
+    dev = spectro.Device(spectro.MockSpectrometer())
+    sat = np.zeros(2048, bool)
+    sat[100:104] = sat[106:110] = sat[112:116] = True     # one band flickering at threshold
+    sat[900:905] = True                                    # a separate line
+    rs = dev.saturated_ranges(sat)
+    assert len(rs) == 2 and rs[0][0] < rs[0][1] < rs[1][0]

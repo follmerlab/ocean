@@ -138,12 +138,21 @@ A dropped frame is only a gap; each spectrum keeps its own true timestamp.
 File sizes are about 16 kB per spectrum per CSV, so 10 min at 200 Hz is ~2 GB of CSV.
 Use HDF5 or a non-zero interval for long fast runs.
 
-## Detector corrections
+## Detector corrections and saturation
 
 Every read applies the Flame's electric-dark and nonlinearity corrections (stored in its
-EEPROM, as in OceanView). Corrected counts can be slightly negative in the masked edge pixels.
-Pixel 1 of this unit is a hot pixel; the first two pixels are hidden in plots and excluded from
-the saturation check, but kept in saved files.
+EEPROM; the same calculation seabreeze and OceanView use). Corrected counts can be slightly
+negative in the masked edge pixels.
+
+Saturation is judged on the **uncorrected** ADC values, at 95 % of 65,535. The corrections lower
+the ceiling: on FLMS00863 a fully saturated detector reads only ~62,000–63,700 corrected
+counts, so a threshold on corrected counts never fires. A saturated spectrum minus a saturated
+background is a flat line, so trust the SATURATED warning.
+
+Known pixels on this unit: pixel 1 is hot (hidden in plots, kept in files), and the pixel at
+463.4 nm accumulates dark current and saturates by itself at ~8 s integration. Single isolated
+saturated pixels are ignored, since real light always spans several pixels. Dark/background
+subtraction removes both.
 
 ## Development
 

@@ -21,9 +21,9 @@ print(f"Pixels     : {info['pixels']}  ({info['wl_range'][0]:.1f}-{info['wl_rang
 print(f"Integration: {info['it_limits_s'][0]*1e3:g} ms - {info['it_limits_s'][1]:g} s")
 
 dev.set_integration(0.1)
-raw, _ = dev.read()
+raw, _, sat = dev.read()
 print(f"100 ms read: min {raw.min():.0f}, median {np.median(raw):.0f}, max {raw.max():.0f} counts"
-      f"{'  (SATURATED)' if dev.is_saturated(raw) else ''}")
+      f"{'  (SATURATED)' if dev.is_saturated(sat) else ''}")
 
 print("\nTiming (5 s at each integration time):")
 for ms in (2, 5, 20, 100):

@@ -48,9 +48,13 @@ function exMarker(L) {
   L.annotations = [...(L.annotations || []), { x: ex, yref: "paper", y: 1, yanchor: "bottom", showarrow: false,
                                                text: `ex ${ex} nm`, font: { size: 11, color: "#666" } }];
 }
+function fmtRanges(rs) {
+  const txt = rs.slice(0, 3).map(([a, b]) => (b - a < 0.5 ? `${a}` : `${a}–${b}`)).join(", ");
+  return rs.length > 3 ? `${txt} +${rs.length - 3} more` : txt;
+}
 function fmtSat(f) {
   if (!f.saturated) return "";
-  const r = (f.saturated_nm || []).map(([a, b]) => (b - a < 0.5 ? `${a}` : `${a}–${b}`)).join(", ");
+  const r = fmtRanges(f.saturated_nm || []);
   return `  SATURATED${r ? " at " + r + " nm" : ""}`;
 }
 
@@ -356,7 +360,7 @@ async function pollRun() {
                                      aborted: "stopped", error: "error" }[run.state];
   }
   const lt = run.latest, where = lt && lt.saturated_nm && lt.saturated_nm.length
-    ? ` at ${lt.saturated_nm.map(([a, b]) => (b - a < 0.5 ? a : `${a}–${b}`)).join(", ")} nm` : "";
+    ? ` at ${fmtRanges(lt.saturated_nm)} nm` : "";
   const sat = run.saturated_frames ? ` · <span class="bad">${run.saturated_frames} saturated${where}</span>` : "";
   const latestT = lt ? `<br>Latest spectrum: t = ${lt.t.toFixed(3)} s` : "";
   const folder = run.folder.split(/[\\/]/).pop();
